@@ -1,0 +1,15 @@
+fastapi[standard]
+uvicorn[standard]
+sqlalchemy[asyncio]
+asyncpg
+alembic
+pydantic-settings
+pydantic-ai-slim[google,logfire]
+logfire
+google-auth
+google-auth-oauthlib
+google-api-python-client
+python-jose[cryptography]
+cryptography
+httpx
+sse-starlette
