@@ -1,5 +1,6 @@
 import logging
 
+import logfire
 from pydantic import BaseModel
 from pydantic_ai import Agent
 from sqlalchemy import select
@@ -44,6 +45,11 @@ def _get_compressor_agent() -> Agent[None, CompressedPrompt]:
 
 async def build_system_prompt(user: User, db: AsyncSession) -> str:
     """Build the full dynamic system prompt for email classification."""
+    with logfire.span("build_system_prompt", user_id=user.id, user_email=user.email):
+        return await _build_system_prompt_inner(user, db)
+
+
+async def _build_system_prompt_inner(user: User, db: AsyncSession) -> str:
     parts: list[str] = []
 
     parts.append(

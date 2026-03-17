@@ -169,7 +169,7 @@ async def reclassify_single(
     buckets = bucket_result.scalars().all()
     bucket_name_to_id = {b.name: b.id for b in buckets}
 
-    bucket_names = await classify_email(email, system_prompt, bucket_name_to_id)
+    bucket_names = await classify_email(email, system_prompt, bucket_name_to_id, user=user)
 
     await db.execute(delete(EmailBucket).where(EmailBucket.email_id == email.id))
     for name in bucket_names:
