@@ -57,9 +57,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Inbox Concierge", lifespan=lifespan)
 
+_origins = ["http://localhost:5173"]
+if settings.frontend_url and settings.frontend_url not in _origins:
+    _origins.append(settings.frontend_url)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_url, "http://localhost:5173"],
+    allow_origins=_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

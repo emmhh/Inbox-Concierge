@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     encryption_key: str = ""
     frontend_url: str = "http://localhost:5173"
 
-    model_config = {"env_file": "../.env", "extra": "ignore"}
+    model_config = {"env_file": ("../.env", ".env"), "extra": "ignore"}
 
 
 settings = Settings()

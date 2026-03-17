@@ -460,3 +460,57 @@ The frontend runs on `http://localhost:5173`.
     - Edit bucket names, descriptions, and examples
     - Add or delete buckets
     - **Save & Reclassify** or **Save & Batch Process** to apply changes
+
+---
+
+## Deployment (Railway)
+
+The app can be deployed to [Railway](https://railway.com) as three services: Postgres, Backend (FastAPI), and Frontend (React).
+
+### Prerequisites
+
+- A Railway account ($5/month Hobby plan — no free tier for always-on services)
+- Your repo pushed to GitHub
+- Google Cloud Console access for OAuth configuration
+
+### 1. Create a Railway Project
+
+1. Go to [railway.com](https://railway.com) and create a new project
+2. Add a **Postgres** service from the database menu (one click)
+3. Add a **Backend** service — connect your GitHub repo, set **Root Directory** to `/backend`
+4. Add a **Frontend** service — connect the same repo, set **Root Directory** to `/frontend`
+
+### 2. Backend Environment Variables
+
+Set these in the Backend service's **Variables** tab:
+
+| Variable | Value |
+|---|---|
+| `DATABASE_URL` | Railway auto-injects this when you link Postgres. Change the scheme from `postgresql://` to `postgresql+asyncpg://` |
+| `GOOGLE_CLIENT_ID` | From your Google Cloud Console |
+| `GOOGLE_CLIENT_SECRET` | From your Google Cloud Console |
+| `GOOGLE_API_KEY` | Your Gemini API key |
+| `JWT_SECRET` | A random secret string |
+| `ENCRYPTION_KEY` | A Fernet encryption key (generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`) |
+| `FRONTEND_URL` | The frontend's Railway URL, e.g. `https://inbox-concierge-frontend.up.railway.app` |
+| `GOOGLE_REDIRECT_URI` | `https://<backend-url>/auth/callback` |
+
+### 3. Frontend Environment Variables
+
+Set these in the Frontend service's **Variables** tab:
+
+| Variable | Value |
+|---|---|
+| `VITE_API_BASE` | The backend's Railway URL, e.g. `https://inbox-concierge-backend.up.railway.app` |
+| `VITE_DEMO_PASSWORD` | A password to protect the demo (visitors must enter this to access the app) |
+
+### 4. Google Cloud Console
+
+1. Go to **APIs & Services > OAuth consent screen** and click **Publish App** to move from Testing to Production (users will see an "unverified app" warning — they click Advanced > "Go to app" to proceed)
+2. Go to **APIs & Services > Credentials** and update your OAuth Client ID:
+   - Add `https://<backend-url>/auth/callback` to **Authorized redirect URIs**
+   - Add `https://<frontend-url>` to **Authorized JavaScript origins**
+
+### 5. Demo Password Gate
+
+The frontend includes a password gate controlled by `VITE_DEMO_PASSWORD`. When set, visitors must enter the password before accessing the app. The password is checked client-side and stored in `sessionStorage` (persists until the browser tab is closed). If `VITE_DEMO_PASSWORD` is not set, the gate is skipped (useful for local development).
