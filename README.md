@@ -8,7 +8,7 @@ Smart email classification powered by AI. Authenticates with your Google account
 flowchart LR
     subgraph frontend [React Frontend]
         AuthPage --> EmailDashboard
-        EmailDashboard --> BucketTabs
+        EmailDashboard --> BucketSidebar
         EmailDashboard --> SettingsPanel
     end
 
@@ -18,7 +18,7 @@ flowchart LR
         ClassifierPipeline --> PydanticAI["Pydantic AI + Gemini 2.5 Flash"]
     end
 
-    subgraph infra [Docker]
+    subgraph infra [Docker / Railway]
         Postgres
     end
 
@@ -52,10 +52,12 @@ flowchart LR
       preferences.py     # User preference endpoints
       feedback.py        # Feedback submission endpoint
     /services
-      gmail.py           # Gmail API wrapper (smart sync, fetch, prune)
+      gmail.py           # Gmail API wrapper (smart sync, chunked fetch, prune)
       classifier.py      # Pydantic AI classification (single, batch, stream)
       prompt_builder.py  # Dynamic prompt construction + compression
   requirements.txt
+  Procfile               # Railway start command
+  runtime.txt            # Python version pin for Railway
 /frontend
   /src
     /components
@@ -66,6 +68,8 @@ flowchart LR
       EmailCard.tsx
       SettingsPanel.tsx
       BucketManager.tsx
+      Tooltip.tsx          # Instant hover tooltips for buttons
+      DemoGate.tsx         # Password gate for demo deployment
     /hooks
       useAuth.ts
       useEmails.ts
@@ -81,8 +85,12 @@ flowchart LR
       index.ts
     App.tsx
     main.tsx
+    index.css
+  index.html
   package.json
   vite.config.ts
+  railway.json           # Railway build + deploy config
+  .npmrc                 # npm legacy-peer-deps for build compat
 docker-compose.yml
 .env.example
 ```
@@ -157,8 +165,8 @@ flowchart TD
 
 Classifies **50 emails per LLM call** (`BATCH_SIZE = 50` in `classifier.py`). All emails in a chunk are formatted into a single prompt with `[EMAIL_ID=N]` markers. The LLM returns a `BatchEmailClassification` structured output mapping each email ID to its bucket names. This reduces ~200 LLM calls to ~4 batch calls, significantly improving throughput.
 
-- **Refresh** button: fetches latest 200 threads from Gmail, prunes stale, then batch-classifies all
-- **Batch Process** button: reclassifies all existing stored emails without re-fetching from Gmail
+- **Sync & Classify** button: fetches latest 200 threads from Gmail, prunes stale, then batch-classifies all
+- **Reclassify** button: reclassifies all existing stored emails without re-fetching from Gmail
 
 **Batch prompt format:**
 
@@ -328,13 +336,14 @@ Used on return visits. Compares Gmail thread IDs with the DB to minimize work:
 5. Prunes stale emails (deletes email + bucket assignments + feedback)
 6. Returns `(new_emails, all_emails)` -- only new emails need classification
 
-### Full Fetch (`fetch_threads`)
+### Full Fetch (`fetch_threads_chunked`)
 
-Used by Refresh. Re-fetches all 200 threads from Gmail:
+Used by "Sync & Classify". Re-fetches all 200 threads from Gmail as a pipelined async generator:
 
 1. Fetches latest 200 thread IDs from Gmail (paginated, 100 per page)
 2. For each thread, fetches full content and upserts into the DB
-3. Prunes stale emails that fell out of the latest 200
+3. **Yields emails in chunks** (default 50) as they're saved — enabling classification to start before all threads are fetched
+4. After all threads are processed, prunes stale emails that fell out of the latest 200
 
 ### Rolling Window
 
@@ -417,9 +426,11 @@ Each feedback row becomes one bullet in the prompt. The email's subject and send
 
 ### Header Actions
 
-- **Refresh**: Fetches latest 200 threads from Gmail, prunes stale emails, and batch-classifies all (50 per LLM call)
-- **Batch Process**: Reclassifies all stored emails in batches of 50 per LLM call (no Gmail fetch, uses existing emails in DB)
+- **Sync & Classify**: Fetches latest 200 threads from Gmail, prunes stale emails, and batch-classifies all (50 per LLM call)
+- **Reclassify**: Reclassifies all stored emails in batches of 50 per LLM call (no Gmail fetch, uses existing emails in DB)
 - **Settings**: Opens the settings panel for bucket management and email preferences
+
+All buttons show instant styled tooltips on hover describing what they do.
 
 ### Sidebar
 
@@ -438,8 +449,9 @@ Each feedback row becomes one bullet in the prompt. The email's subject and send
 
 - **Email Preferences**: textarea with hints ("What do you use this email for? What do you like to focus on?") -- injected verbatim into the classification prompt
 - **Bucket Manager**: edit name, description, and few-shot examples for each bucket; add or delete buckets
-- **Save & Reclassify**: persists changes and reclassifies all emails one-by-one
-- **Save & Batch Process**: persists changes and reclassifies all emails in batches of 50 (faster)
+- **Save**: persists preference and bucket changes without reclassifying
+- **Save & Reclassify**: persists changes and reclassifies all emails one-by-one (slower but more accurate)
+- **Save & Batch**: persists changes and reclassifies all emails in batches of 50 (faster)
 
 ## Prerequisites
 
@@ -529,13 +541,13 @@ The frontend runs on `http://localhost:5173`.
 5. Use the sidebar to filter by bucket
 6. Give thumbs up/down on bucket tags -- the email is automatically reclassified with the updated prompt
 7. Click the refresh icon on any email card to reclassify just that email
-8. Use **Refresh** to re-fetch from Gmail and batch-classify all emails
-9. Use **Batch Process** to reclassify existing emails without re-fetching
+8. Use **Sync & Classify** to re-fetch from Gmail and batch-classify all emails
+9. Use **Reclassify** to reclassify existing emails without re-fetching
 10. Open **Settings** to:
     - Describe your email priorities (personalizes the AI classifier)
     - Edit bucket names, descriptions, and examples
     - Add or delete buckets
-    - **Save & Reclassify** or **Save & Batch Process** to apply changes
+    - **Save** (no reclassify), **Save & Reclassify** (one-by-one), or **Save & Batch** (50 per call) to apply changes
 
 ---
 
@@ -590,3 +602,46 @@ Set these in the Frontend service's **Variables** tab:
 ### 5. Demo Password Gate
 
 The frontend includes a password gate controlled by `VITE_DEMO_PASSWORD`. When set, visitors must enter the password before accessing the app. The password is checked client-side and stored in `sessionStorage` (persists until the browser tab is closed). If `VITE_DEMO_PASSWORD` is not set, the gate is skipped (useful for local development).
+
+---
+
+## Future Improvements
+
+### Scalability
+- Horizontal backend scaling with load balancer (sticky sessions for SSE, or migrate to WebSockets)
+- Database read/write separation with read replicas for listing queries
+- Rate limiting per user to stay within Gmail API quotas
+- Connection pooling via PgBouncer for multi-replica deployments
+
+### Background Classification
+- Replace on-login sync with a background worker (Celery/ARQ + Redis) that pre-classifies emails
+- Use Gmail push notifications (Google Pub/Sub watches) for near-real-time classification without polling
+- Users open the app to fully-tagged emails with zero LLM wait time
+
+### LLM-as-Judge Eval Pipeline
+- Auto-generate test cases from thumbs-up/down feedback (e.g., "email X should → [A, B], not → [C]")
+- Run the eval suite before deploying prompt changes, model upgrades, or bucket definition edits
+- Track precision/recall per bucket over time
+
+### Chat Over Emails
+- RAG-based chatbot: embed email corpus (pgvector), let users ask questions like "what did my manager say about Q3?"
+- Return answers with cited email references
+
+### Security Hardening
+- Move secrets to a secrets manager (AWS/GCP) with automatic key rotation
+- Replace in-memory PKCE state (`_pending_states`) with Redis or a short-TTL DB table (survives restarts, works across replicas)
+- Add server-side demo auth middleware, CSRF protection, and rate limiting on auth endpoints
+
+### Cost & Model Optimization
+- Route "easy" emails (newsletters, promos) to a smaller/cheaper model; reserve the full model for ambiguous cases
+- Fine-tune a lightweight classifier on accumulated user feedback data
+- Cache classifications for recurring sender + subject patterns to skip LLM calls
+
+### Data & Observability
+- Archive old emails and classifications to cold storage for analytics (currently lost on rolling window prune)
+- Alerting on LLM latency spikes, classification failure rates, and Gmail API quota usage
+- Per-user cost tracking (LLM tokens consumed)
+
+### Prompt Versioning
+- Version-controlled prompt registry with rollback support
+- A/B test prompt versions against the eval suite before production rollout
