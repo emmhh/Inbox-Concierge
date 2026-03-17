@@ -49,6 +49,18 @@ export default function SettingsPanel({
     }
   };
 
+  const handleSaveOnly = async () => {
+    setSaving(true);
+    try {
+      await updatePreferences(importance);
+      setToast('Preferences saved.');
+      setTimeout(() => setToast(''), 3000);
+      onClose();
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleSaveAndBatch = async () => {
     setSaving(true);
     try {
@@ -107,6 +119,13 @@ export default function SettingsPanel({
 
         <div className="px-6 py-4 border-t border-slate-200 flex gap-2">
           <button
+            onClick={handleSaveOnly}
+            disabled={saving}
+            className="flex-1 bg-slate-600 text-white py-2.5 rounded-xl font-medium hover:bg-slate-700 disabled:opacity-50 transition-colors cursor-pointer text-sm"
+          >
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+          <button
             onClick={handleSaveAndReclassify}
             disabled={saving}
             className="flex-1 bg-indigo-600 text-white py-2.5 rounded-xl font-medium hover:bg-indigo-700 disabled:opacity-50 transition-colors cursor-pointer text-sm"
@@ -118,7 +137,7 @@ export default function SettingsPanel({
             disabled={saving}
             className="flex-1 bg-emerald-600 text-white py-2.5 rounded-xl font-medium hover:bg-emerald-700 disabled:opacity-50 transition-colors cursor-pointer text-sm"
           >
-            {saving ? 'Saving...' : 'Save & Batch Process'}
+            {saving ? 'Saving...' : 'Save & Batch'}
           </button>
         </div>
 

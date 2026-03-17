@@ -23,6 +23,7 @@ export function useEmails() {
     (
       endpoint: '/emails/fetch-and-classify' | '/emails/reclassify' | '/emails/batch-classify' | '/emails/fetch-and-batch-classify' | '/emails/sync-and-classify',
       keepExisting = false,
+      onDone?: () => void,
     ) => {
       setClassifying(true);
       setProgress({ current: 0, total: 0 });
@@ -67,6 +68,7 @@ export function useEmails() {
               setSummary(event.data);
             }
             setClassifying(false);
+            onDone?.();
           }
         },
         () => {

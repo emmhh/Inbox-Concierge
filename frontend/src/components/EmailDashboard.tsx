@@ -37,12 +37,17 @@ export default function EmailDashboard({ user, onLogout }: EmailDashboardProps) 
     });
   }, [fetchBuckets, fetchEmails]);
 
+  const refreshAfterSync = useCallback(() => {
+    fetchEmails(selectedBucketId ?? undefined);
+    fetchBuckets();
+  }, [fetchEmails, fetchBuckets, selectedBucketId]);
+
   useEffect(() => {
     if (initialLoad || classifying) return;
     if (emails.length === 0) {
       startClassification('/emails/fetch-and-batch-classify');
     } else {
-      startClassification('/emails/sync-and-classify', true);
+      startClassification('/emails/sync-and-classify', true, refreshAfterSync);
     }
   }, [initialLoad]); // eslint-disable-line react-hooks/exhaustive-deps
 
