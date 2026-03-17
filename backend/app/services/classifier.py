@@ -71,40 +71,40 @@ async def classify_email(
     user: User | None = None,
 ) -> list[str]:
     """Classify a single email. Returns list of matched bucket names."""
-    span_attrs = {"email_id": email.id, "subject": email.subject or ""}
+    user_prompt = (
+        f"Subject: {email.subject or '(no subject)'}\n"
+        f"From: {email.sender or 'unknown'}\n"
+        f"Date: {email.date or 'unknown'}\n"
+        f"Body: {email.body_preview or '(empty)'}"
+    )
+
+    span_attrs: dict = {"email_id": email.id, "subject": email.subject or ""}
     if user:
         span_attrs["user_id"] = user.id
         span_attrs["user_email"] = user.email
 
-    with logfire.span("classify_single_email", **span_attrs):
-        user_prompt = (
-            f"Subject: {email.subject or '(no subject)'}\n"
-            f"From: {email.sender or 'unknown'}\n"
-            f"Date: {email.date or 'unknown'}\n"
-            f"Body: {email.body_preview or '(empty)'}"
-        )
-
-        for attempt in range(MAX_RETRIES + 1):
-            try:
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            with logfire.span("classify_single_email", **span_attrs):
                 result = await _get_classifier_agent().run(
                     user_prompt,
                     instructions=system_prompt,
                 )
-                valid_names = [
-                    name for name in result.output.bucket_names
-                    if name in bucket_name_to_id
-                ]
-                return valid_names
-            except Exception as e:
-                if attempt < MAX_RETRIES:
-                    delay = RETRY_BASE_DELAY * (2 ** attempt)
-                    logger.warning(
-                        f"Classification retry {attempt + 1} for email {email.id}: {e}"
-                    )
-                    await asyncio.sleep(delay)
-                else:
-                    logger.error(f"Classification failed for email {email.id}: {e}")
-                    raise
+            valid_names = [
+                name for name in result.output.bucket_names
+                if name in bucket_name_to_id
+            ]
+            return valid_names
+        except Exception as e:
+            if attempt < MAX_RETRIES:
+                delay = RETRY_BASE_DELAY * (2 ** attempt)
+                logger.warning(
+                    f"Classification retry {attempt + 1} for email {email.id}: {e}"
+                )
+                await asyncio.sleep(delay)
+            else:
+                logger.error(f"Classification failed for email {email.id}: {e}")
+                raise
 
 
 async def classify_emails(
@@ -113,20 +113,8 @@ async def classify_emails(
     db: AsyncSession,
 ):
     """
-    Classify a list of emails. Yields SSE event dicts as progress updates.
+    Classify a list of emails one-by-one. Yields SSE event dicts.
     """
-    with logfire.span(
-        "classify_emails",
-        user_id=user.id,
-        user_email=user.email,
-        email_count=len(emails),
-        mode="one-by-one",
-    ):
-        async for event in _classify_emails_inner(user, emails, db):
-            yield event
-
-
-async def _classify_emails_inner(user, emails, db):
     system_prompt = await build_system_prompt(user, db)
 
     result = await db.execute(
@@ -141,7 +129,9 @@ async def _classify_emails_inner(user, emails, db):
 
     for i, email in enumerate(emails):
         try:
-            bucket_names = await classify_email(email, system_prompt, bucket_name_to_id)
+            bucket_names = await classify_email(
+                email, system_prompt, bucket_name_to_id, user=user
+            )
 
             await db.execute(
                 delete(EmailBucket).where(EmailBucket.email_id == email.id)
@@ -196,6 +186,7 @@ async def classify_emails_batch(
     emails: list[Email],
     system_prompt: str,
     bucket_name_to_id: dict[str, int],
+    user: User | None = None,
 ) -> dict[int, list[str]]:
     """Classify up to BATCH_SIZE emails in a single LLM call. Returns {email_id: [bucket_names]}."""
     lines = []
@@ -213,12 +204,18 @@ async def classify_emails_batch(
         + "\n---\n".join(lines)
     )
 
+    span_attrs: dict = {"batch_size": len(emails)}
+    if user:
+        span_attrs["user_id"] = user.id
+        span_attrs["user_email"] = user.email
+
     for attempt in range(MAX_RETRIES + 1):
         try:
-            result = await _get_batch_classifier_agent().run(
-                user_prompt,
-                instructions=system_prompt,
-            )
+            with logfire.span("classify_batch_llm_call", **span_attrs):
+                result = await _get_batch_classifier_agent().run(
+                    user_prompt,
+                    instructions=system_prompt,
+                )
             mapping: dict[int, list[str]] = {}
             for item in result.output.results:
                 valid = [n for n in item.bucket_names if n in bucket_name_to_id]
@@ -240,19 +237,6 @@ async def classify_emails_in_batches(
     db: AsyncSession,
 ):
     """Classify emails in batches of BATCH_SIZE. Yields SSE event dicts."""
-    with logfire.span(
-        "classify_emails_in_batches",
-        user_id=user.id,
-        user_email=user.email,
-        email_count=len(emails),
-        mode="batch",
-        batch_size=BATCH_SIZE,
-    ):
-        async for event in _classify_emails_in_batches_inner(user, emails, db):
-            yield event
-
-
-async def _classify_emails_in_batches_inner(user, emails, db):
     system_prompt = await build_system_prompt(user, db)
 
     result = await db.execute(
@@ -269,7 +253,9 @@ async def _classify_emails_in_batches_inner(user, emails, db):
     for batch_start in range(0, total, BATCH_SIZE):
         batch = emails[batch_start : batch_start + BATCH_SIZE]
         try:
-            mapping = await classify_emails_batch(batch, system_prompt, bucket_name_to_id)
+            mapping = await classify_emails_batch(
+                batch, system_prompt, bucket_name_to_id, user=user
+            )
 
             for email in batch:
                 processed += 1
