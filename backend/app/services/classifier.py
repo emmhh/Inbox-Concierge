@@ -107,81 +107,6 @@ async def classify_email(
                 raise
 
 
-async def classify_emails(
-    user: User,
-    emails: list[Email],
-    db: AsyncSession,
-):
-    """
-    Classify a list of emails one-by-one. Yields SSE event dicts.
-    """
-    system_prompt = await build_system_prompt(user, db)
-
-    result = await db.execute(
-        select(Bucket).where(Bucket.user_id == user.id)
-    )
-    buckets = result.scalars().all()
-    bucket_name_to_id = {b.name: b.id for b in buckets}
-
-    total = len(emails)
-    classified = 0
-    failed = 0
-
-    for i, email in enumerate(emails):
-        try:
-            bucket_names = await classify_email(
-                email, system_prompt, bucket_name_to_id, user=user
-            )
-
-            await db.execute(
-                delete(EmailBucket).where(EmailBucket.email_id == email.id)
-            )
-            for name in bucket_names:
-                bid = bucket_name_to_id[name]
-                db.add(EmailBucket(email_id=email.id, bucket_id=bid))
-
-            await db.commit()
-            classified += 1
-
-            yield {
-                "event": "classified",
-                "data": {
-                    "email_id": email.id,
-                    "thread_id": email.thread_id,
-                    "subject": email.subject,
-                    "sender": email.sender,
-                    "snippet": email.snippet,
-                    "date": _utc_iso(email.date),
-                    "bucket_names": bucket_names,
-                    "bucket_ids": [bucket_name_to_id[n] for n in bucket_names],
-                    "progress": i + 1,
-                    "total": total,
-                },
-            }
-        except Exception as e:
-            failed += 1
-            logger.error(f"Skipping email {email.id}: {e}")
-            yield {
-                "event": "error",
-                "data": {
-                    "email_id": email.id,
-                    "subject": email.subject,
-                    "error": str(e),
-                    "progress": i + 1,
-                    "total": total,
-                },
-            }
-
-    yield {
-        "event": "done",
-        "data": {
-            "classified": classified,
-            "failed": failed,
-            "total": total,
-        },
-    }
-
-
 async def classify_emails_batch(
     emails: list[Email],
     system_prompt: str,
@@ -231,12 +156,24 @@ async def classify_emails_batch(
                 raise
 
 
-async def classify_emails_in_batches(
+async def _chunks_from_list(emails: list[Email], chunk_size: int):
+    """Wrap a flat list into an async generator of (chunk, total) tuples."""
+    total = len(emails)
+    for i in range(0, total, chunk_size):
+        yield emails[i : i + chunk_size], total
+
+
+async def classify_email_chunks(
     user: User,
-    emails: list[Email],
+    chunks,
     db: AsyncSession,
+    batch_size: int = BATCH_SIZE,
 ):
-    """Classify emails in batches of BATCH_SIZE. Yields SSE event dicts."""
+    """
+    Unified classification pipeline. Classifies email chunks as they arrive.
+    `chunks` is an async generator yielding (list[Email], total_count) tuples.
+    When batch_size == 1, uses single-email classifier; otherwise uses batch classifier.
+    """
     system_prompt = await build_system_prompt(user, db)
 
     result = await db.execute(
@@ -245,61 +182,100 @@ async def classify_emails_in_batches(
     buckets = result.scalars().all()
     bucket_name_to_id = {b.name: b.id for b in buckets}
 
-    total = len(emails)
     classified = 0
     failed = 0
     processed = 0
 
-    for batch_start in range(0, total, BATCH_SIZE):
-        batch = emails[batch_start : batch_start + BATCH_SIZE]
-        try:
-            mapping = await classify_emails_batch(
-                batch, system_prompt, bucket_name_to_id, user=user
-            )
-
-            for email in batch:
+    async for chunk, total in chunks:
+        if batch_size == 1:
+            for email in chunk:
                 processed += 1
-                bucket_names = mapping.get(email.id, [])
+                try:
+                    bucket_names = await classify_email(
+                        email, system_prompt, bucket_name_to_id, user=user
+                    )
+                    await db.execute(
+                        delete(EmailBucket).where(EmailBucket.email_id == email.id)
+                    )
+                    for name in bucket_names:
+                        db.add(EmailBucket(email_id=email.id, bucket_id=bucket_name_to_id[name]))
+                    await db.commit()
+                    classified += 1
 
-                await db.execute(
-                    delete(EmailBucket).where(EmailBucket.email_id == email.id)
+                    yield {
+                        "event": "classified",
+                        "data": {
+                            "email_id": email.id,
+                            "thread_id": email.thread_id,
+                            "subject": email.subject,
+                            "sender": email.sender,
+                            "snippet": email.snippet,
+                            "date": _utc_iso(email.date),
+                            "bucket_names": bucket_names,
+                            "bucket_ids": [bucket_name_to_id[n] for n in bucket_names],
+                            "progress": processed,
+                            "total": total,
+                        },
+                    }
+                except Exception as e:
+                    failed += 1
+                    logger.error(f"Skipping email {email.id}: {e}")
+                    yield {
+                        "event": "error",
+                        "data": {
+                            "email_id": email.id,
+                            "subject": email.subject,
+                            "error": str(e),
+                            "progress": processed,
+                            "total": total,
+                        },
+                    }
+        else:
+            try:
+                mapping = await classify_emails_batch(
+                    chunk, system_prompt, bucket_name_to_id, user=user
                 )
-                for name in bucket_names:
-                    db.add(EmailBucket(email_id=email.id, bucket_id=bucket_name_to_id[name]))
+                for email in chunk:
+                    processed += 1
+                    bucket_names = mapping.get(email.id, [])
+                    await db.execute(
+                        delete(EmailBucket).where(EmailBucket.email_id == email.id)
+                    )
+                    for name in bucket_names:
+                        db.add(EmailBucket(email_id=email.id, bucket_id=bucket_name_to_id[name]))
+                    await db.commit()
+                    classified += 1
 
-                await db.commit()
-                classified += 1
-
-                yield {
-                    "event": "classified",
-                    "data": {
-                        "email_id": email.id,
-                        "thread_id": email.thread_id,
-                        "subject": email.subject,
-                        "sender": email.sender,
-                        "snippet": email.snippet,
-                        "date": _utc_iso(email.date),
-                        "bucket_names": bucket_names,
-                        "bucket_ids": [bucket_name_to_id[n] for n in bucket_names],
-                        "progress": processed,
-                        "total": total,
-                    },
-                }
-        except Exception as e:
-            for email in batch:
-                processed += 1
-                failed += 1
-                logger.error(f"Batch failed, skipping email {email.id}: {e}")
-                yield {
-                    "event": "error",
-                    "data": {
-                        "email_id": email.id,
-                        "subject": email.subject,
-                        "error": str(e),
-                        "progress": processed,
-                        "total": total,
-                    },
-                }
+                    yield {
+                        "event": "classified",
+                        "data": {
+                            "email_id": email.id,
+                            "thread_id": email.thread_id,
+                            "subject": email.subject,
+                            "sender": email.sender,
+                            "snippet": email.snippet,
+                            "date": _utc_iso(email.date),
+                            "bucket_names": bucket_names,
+                            "bucket_ids": [bucket_name_to_id[n] for n in bucket_names],
+                            "progress": processed,
+                            "total": total,
+                        },
+                    }
+            except Exception as e:
+                for email in chunk:
+                    processed += 1
+                    failed += 1
+                    logger.error(f"Batch failed, skipping email {email.id}: {e}")
+                    yield {
+                        "event": "error",
+                        "data": {
+                            "email_id": email.id,
+                            "subject": email.subject,
+                            "error": str(e),
+                            "progress": processed,
+                            "total": total,
+                        },
+                    }
 
     yield {
         "event": "done",
@@ -309,3 +285,15 @@ async def classify_emails_in_batches(
             "total": total,
         },
     }
+
+
+async def classify_emails_in_batches(
+    user: User,
+    emails: list[Email],
+    db: AsyncSession,
+):
+    """Classify a pre-loaded list of emails in batches. Convenience wrapper around classify_email_chunks."""
+    async for event in classify_email_chunks(
+        user, _chunks_from_list(emails, BATCH_SIZE), db, batch_size=BATCH_SIZE
+    ):
+        yield event

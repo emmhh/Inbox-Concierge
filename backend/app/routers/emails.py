@@ -11,9 +11,15 @@ from app.auth_utils import get_current_user
 from app.database import get_db
 from app.models import Bucket, Email, EmailBucket, User
 from app.schemas import EmailOut
-from app.services.classifier import classify_email, classify_emails, classify_emails_in_batches
+from app.services.classifier import (
+    BATCH_SIZE,
+    _chunks_from_list,
+    classify_email,
+    classify_email_chunks,
+    classify_emails_in_batches,
+)
 from app.services.prompt_builder import build_system_prompt
-from app.services.gmail import fetch_threads, sync_threads
+from app.services.gmail import fetch_threads_chunked, sync_threads
 
 router = APIRouter()
 
@@ -62,18 +68,25 @@ async def list_emails(
     return out
 
 
-async def _classification_stream(
-    user: User, db: AsyncSession, fetch_new: bool = True
+async def _pipeline_stream(
+    user: User, db: AsyncSession, batch_size: int = BATCH_SIZE
 ) -> AsyncGenerator[str, None]:
-    if fetch_new:
-        emails = await fetch_threads(user, db)
-    else:
-        result = await db.execute(
-            select(Email).where(Email.user_id == user.id).order_by(Email.date.desc().nullslast())
-        )
-        emails = list(result.scalars().all())
+    """Pipeline: fetch emails from Gmail in chunks → classify each chunk immediately."""
+    chunks = fetch_threads_chunked(user, db, chunk_size=batch_size)
+    async for event in classify_email_chunks(user, chunks, db, batch_size=batch_size):
+        yield json.dumps(event)
 
-    async for event in classify_emails(user, emails, db):
+
+async def _db_classify_stream(
+    user: User, db: AsyncSession, batch_size: int = BATCH_SIZE
+) -> AsyncGenerator[str, None]:
+    """Classify emails already in DB (no Gmail fetch)."""
+    result = await db.execute(
+        select(Email).where(Email.user_id == user.id).order_by(Email.date.desc().nullslast())
+    )
+    emails = list(result.scalars().all())
+    chunks = _chunks_from_list(emails, batch_size)
+    async for event in classify_email_chunks(user, chunks, db, batch_size=batch_size):
         yield json.dumps(event)
 
 
@@ -82,7 +95,7 @@ async def fetch_and_classify(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    return EventSourceResponse(_classification_stream(user, db, fetch_new=True))
+    return EventSourceResponse(_pipeline_stream(user, db, batch_size=1))
 
 
 @router.post("/reclassify")
@@ -90,22 +103,7 @@ async def reclassify(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    return EventSourceResponse(_classification_stream(user, db, fetch_new=False))
-
-
-async def _batch_classification_stream(
-    user: User, db: AsyncSession, fetch_new: bool = False
-) -> AsyncGenerator[str, None]:
-    if fetch_new:
-        emails = await fetch_threads(user, db)
-    else:
-        result = await db.execute(
-            select(Email).where(Email.user_id == user.id).order_by(Email.date.desc().nullslast())
-        )
-        emails = list(result.scalars().all())
-
-    async for event in classify_emails_in_batches(user, emails, db):
-        yield json.dumps(event)
+    return EventSourceResponse(_db_classify_stream(user, db, batch_size=1))
 
 
 @router.post("/batch-classify")
@@ -113,7 +111,7 @@ async def batch_classify(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    return EventSourceResponse(_batch_classification_stream(user, db, fetch_new=False))
+    return EventSourceResponse(_db_classify_stream(user, db, batch_size=BATCH_SIZE))
 
 
 @router.post("/fetch-and-batch-classify")
@@ -121,7 +119,7 @@ async def fetch_and_batch_classify(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    return EventSourceResponse(_batch_classification_stream(user, db, fetch_new=True))
+    return EventSourceResponse(_pipeline_stream(user, db, batch_size=BATCH_SIZE))
 
 
 async def _sync_and_classify_stream(

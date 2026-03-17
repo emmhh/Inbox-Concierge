@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { Bucket } from '../types';
 import { getPreferences, updatePreferences } from '../api/feedback';
 import BucketManager from './BucketManager';
+import Tooltip from './Tooltip';
 
 interface SettingsPanelProps {
   isOpen: boolean;
@@ -118,27 +119,33 @@ export default function SettingsPanel({
         </div>
 
         <div className="px-6 py-4 border-t border-slate-200 flex gap-2">
-          <button
-            onClick={handleSaveOnly}
-            disabled={saving}
-            className="flex-1 bg-slate-600 text-white py-2.5 rounded-xl font-medium hover:bg-slate-700 disabled:opacity-50 transition-colors cursor-pointer text-sm"
-          >
-            {saving ? 'Saving...' : 'Save'}
-          </button>
-          <button
-            onClick={handleSaveAndReclassify}
-            disabled={saving}
-            className="flex-1 bg-indigo-600 text-white py-2.5 rounded-xl font-medium hover:bg-indigo-700 disabled:opacity-50 transition-colors cursor-pointer text-sm"
-          >
-            {saving ? 'Saving...' : 'Save & Reclassify'}
-          </button>
-          <button
-            onClick={handleSaveAndBatch}
-            disabled={saving}
-            className="flex-1 bg-emerald-600 text-white py-2.5 rounded-xl font-medium hover:bg-emerald-700 disabled:opacity-50 transition-colors cursor-pointer text-sm"
-          >
-            {saving ? 'Saving...' : 'Save & Batch'}
-          </button>
+          <Tooltip text="Save preferences without reclassifying" position="top">
+            <button
+              onClick={handleSaveOnly}
+              disabled={saving}
+              className="bg-slate-600 text-white py-2.5 px-4 rounded-xl font-medium hover:bg-slate-700 disabled:opacity-50 transition-colors cursor-pointer text-sm"
+            >
+              {saving ? 'Saving...' : 'Save'}
+            </button>
+          </Tooltip>
+          <Tooltip text="Classify emails one-by-one — slower but more accurate" position="top">
+            <button
+              onClick={handleSaveAndReclassify}
+              disabled={saving}
+              className="bg-indigo-600 text-white py-2.5 px-4 rounded-xl font-medium hover:bg-indigo-700 disabled:opacity-50 transition-colors cursor-pointer text-sm"
+            >
+              {saving ? 'Saving...' : 'Save & Reclassify'}
+            </button>
+          </Tooltip>
+          <Tooltip text="Classify 50 emails per LLM call — faster" position="top">
+            <button
+              onClick={handleSaveAndBatch}
+              disabled={saving}
+              className="bg-emerald-600 text-white py-2.5 px-4 rounded-xl font-medium hover:bg-emerald-700 disabled:opacity-50 transition-colors cursor-pointer text-sm"
+            >
+              {saving ? 'Saving...' : 'Save & Batch'}
+            </button>
+          </Tooltip>
         </div>
 
         {toast && (

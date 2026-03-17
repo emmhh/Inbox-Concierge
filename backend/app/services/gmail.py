@@ -165,6 +165,75 @@ async def _prune_stale_emails(
     return len(stale_ids)
 
 
+async def fetch_threads_chunked(
+    user: User, db: AsyncSession, chunk_size: int = 50, max_results: int = MAX_THREADS
+):
+    """
+    Fetch threads from Gmail and yield them in chunks as they're fetched.
+    Yields (chunk_of_emails, total_thread_count) tuples.
+    Classifiers can start processing each chunk immediately.
+    """
+    service, creds = _build_gmail_service(user)
+
+    if _refresh_credentials(user, creds):
+        await db.commit()
+
+    thread_ids = _collect_thread_ids(service, max_results)
+    total = len(thread_ids)
+    logger.info(f"Fetched {total} thread IDs from Gmail, streaming in chunks of {chunk_size}")
+
+    chunk: list[Email] = []
+    for tid in thread_ids:
+        parsed = _parse_thread(service, tid)
+        if not parsed:
+            continue
+
+        result = await db.execute(
+            select(Email).where(Email.user_id == user.id, Email.thread_id == tid)
+        )
+        existing = result.scalars().first()
+
+        if existing:
+            existing.subject = parsed["subject"]
+            existing.sender = parsed["sender"]
+            existing.snippet = parsed["snippet"]
+            existing.body_preview = parsed["body_preview"]
+            existing.date = parsed["date"]
+            existing.message_id = parsed["message_id"]
+            chunk.append(existing)
+        else:
+            email = Email(
+                user_id=user.id,
+                thread_id=parsed["thread_id"],
+                message_id=parsed["message_id"],
+                subject=parsed["subject"],
+                sender=parsed["sender"],
+                snippet=parsed["snippet"],
+                body_preview=parsed["body_preview"],
+                date=parsed["date"],
+            )
+            db.add(email)
+            chunk.append(email)
+
+        if len(chunk) >= chunk_size:
+            await db.commit()
+            for e in chunk:
+                await db.refresh(e)
+            yield chunk, total
+            chunk = []
+
+    if chunk:
+        await db.commit()
+        for e in chunk:
+            await db.refresh(e)
+        yield chunk, total
+
+    pruned = await _prune_stale_emails(user.id, set(thread_ids), db)
+    if pruned:
+        logger.info(f"Pruned {pruned} stale emails")
+    await db.commit()
+
+
 async def sync_threads(
     user: User, db: AsyncSession, max_results: int = MAX_THREADS
 ) -> tuple[list[Email], list[Email]]:

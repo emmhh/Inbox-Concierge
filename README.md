@@ -235,6 +235,82 @@ Token count is estimated via `len(prompt) // 4`. When it exceeds **3,000 tokens*
 
 Both the original and compressed prompts are stored in `prompt_snapshots` for auditability. If the compression LLM call fails, the original uncompressed prompt is used as a fallback.
 
+### SSE Streaming Architecture
+
+All classification endpoints stream results to the frontend in real time using **Server-Sent Events (SSE)**. This lets the UI update progressively — each email appears as soon as it is classified, rather than waiting for the entire batch to finish.
+
+```mermaid
+sequenceDiagram
+    participant Browser as React Frontend
+    participant API as FastAPI Router
+    participant Classifier as classifier.py
+    participant Gmail as Gmail API
+    participant LLM as Gemini 2.5 Flash
+
+    Browser->>API: POST /emails/fetch-and-batch-classify
+    Note over Browser,API: fetch() with ReadableStream (not EventSource)
+
+    API->>Gmail: Fetch all thread IDs (paginated)
+    loop For each chunk of 50 emails
+        Gmail-->>API: Thread full content
+        API->>Classifier: classify_email_chunks(chunk)
+        Classifier->>LLM: Single LLM call — 50 emails in one prompt
+        LLM-->>Classifier: BatchEmailClassification structured output
+        loop For each email in chunk
+            Classifier-->>API: yield {"event": "classified", ...}
+            API-->>Browser: data: {"event":"classified","data":{...}}\n\n
+            Note over Browser: setEmails() renders email card immediately
+        end
+    end
+    Classifier-->>API: yield {"event": "done", ...}
+    API-->>Browser: data: {"event":"done","data":{...}}\n\n
+    Note over Browser: Hide spinner, show summary
+```
+
+**Backend — SSE producer**
+
+The FastAPI endpoint wraps an async generator in `EventSourceResponse` (from `sse-starlette`). Two internal stream helpers feed the same unified pipeline:
+
+- **`_pipeline_stream`** — uses `fetch_threads_chunked`, an async generator in `gmail.py` that fetches Gmail threads and yields them to the classifier in chunks as each batch is saved to the DB. This enables **pipelining**: chunk N+1 is being fetched from Gmail while chunk N is being classified by the LLM.
+- **`_db_classify_stream`** — loads all existing emails from the DB, wraps them into chunks via `_chunks_from_list`, and feeds them into the same pipeline without any Gmail round-trip.
+
+Both converge into `classify_email_chunks` in `classifier.py`, which is the single unified classification pipeline:
+
+```
+chunks (async generator)
+  └─ classify_email_chunks(user, chunks, db, batch_size)
+       ├─ build_system_prompt(user, db)          — once, before loop
+       ├─ async for chunk, total in chunks:
+       │    ├─ [batch_size == 1]  → classify_email(email, ...)      — 1 LLM call/email
+       │    └─ [batch_size == 50] → classify_emails_batch(chunk, ...) — 1 LLM call/50 emails
+       │    └─ yield {"event": "classified", "data": {...}}  — per email
+       └─ yield {"event": "done", "data": {...}}
+```
+
+**Frontend — SSE consumer**
+
+The native browser `EventSource` API only supports GET requests, so `streamClassification()` in `api/emails.ts` uses `fetch()` POST with `response.body.getReader()` to consume the stream manually:
+
+1. A `TextDecoder` + newline buffer parses incoming `data:` lines from the chunked response body.
+2. Each parsed JSON object is dispatched to the `onEvent` callback in `useEmails.ts`.
+3. The hook updates React state based on the event type:
+
+| Event | What the hook does |
+|---|---|
+| `classified` | Upserts email into `emails` state — if it already exists (reclassify), updates bucket tags in place; otherwise appends it. Updates `progress` counter. Sidebar bucket counts recompute automatically via `useMemo`. |
+| `error` | Increments `progress` only — email is skipped without crashing the stream. |
+| `done` | Sets the summary banner (`classified X / total Y`) and clears the `classifying` spinner. If `skipped: true` (smart sync found no new emails), nothing changes in the UI. |
+
+4. `startClassification` returns an `AbortController`-backed cancel function — called on component unmount to cleanly abort the `fetch` stream.
+
+**SSE event payload reference:**
+
+| Event | Key fields |
+|---|---|
+| `classified` | `email_id`, `thread_id`, `subject`, `sender`, `snippet`, `date` (UTC ISO), `bucket_names`, `bucket_ids`, `progress`, `total` |
+| `error` | `email_id`, `subject`, `error` (message), `progress`, `total` |
+| `done` | `classified` (count), `failed` (count), `total`, `skipped` (bool, smart-sync only) |
+
 ### Error Handling
 
 Each email classification is wrapped in try/except with up to **2 retries** (`MAX_RETRIES = 2`, exponential backoff with `RETRY_BASE_DELAY = 1.0s`). If all retries fail, the email is skipped and an `error` SSE event is sent. The overall run continues -- a single failure does not abort remaining emails. A summary at the end reports total classified vs. failed.
