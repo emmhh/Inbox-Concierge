@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from datetime import timezone
 
 from pydantic import BaseModel
 from pydantic_ai import Agent
@@ -10,6 +11,13 @@ from app.models import Bucket, Email, EmailBucket, User
 from app.services.prompt_builder import build_system_prompt
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_iso(dt) -> str | None:
+    if dt is None:
+        return None
+    return dt.replace(tzinfo=timezone.utc).isoformat()
+
 
 MAX_RETRIES = 2
 RETRY_BASE_DELAY = 1.0
@@ -133,7 +141,7 @@ async def classify_emails(
                     "subject": email.subject,
                     "sender": email.sender,
                     "snippet": email.snippet,
-                    "date": email.date.isoformat() if email.date else None,
+                    "date": _utc_iso(email.date),
                     "bucket_names": bucket_names,
                     "bucket_ids": [bucket_name_to_id[n] for n in bucket_names],
                     "progress": i + 1,
@@ -251,7 +259,7 @@ async def classify_emails_in_batches(
                         "subject": email.subject,
                         "sender": email.sender,
                         "snippet": email.snippet,
-                        "date": email.date.isoformat() if email.date else None,
+                        "date": _utc_iso(email.date),
                         "bucket_names": bucket_names,
                         "bucket_ids": [bucket_name_to_id[n] for n in bucket_names],
                         "progress": processed,

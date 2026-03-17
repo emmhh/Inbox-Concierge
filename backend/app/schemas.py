@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_serializer
 
 
 class UserOut(BaseModel):
@@ -44,6 +44,12 @@ class EmailOut(BaseModel):
     bucket_names: list[str] = []
 
     model_config = {"from_attributes": True}
+
+    @field_serializer("date")
+    def serialize_date_utc(self, v: datetime | None) -> str | None:
+        if v is None:
+            return None
+        return v.replace(tzinfo=timezone.utc).isoformat()
 
 
 class FeedbackCreate(BaseModel):
