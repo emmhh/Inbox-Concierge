@@ -1,7 +1,3 @@
-# Live link password is tenex2026
-
-Sorry I forgot to include access password to the live url in submission, so I'm pasting it here.
-
 # Inbox Concierge - Email Classification App
 
 Smart email classification powered by AI. Authenticates with your Google account, fetches your last 200 email threads, and classifies them into customizable buckets using Gemini.
