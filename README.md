@@ -1,3 +1,6 @@
+# Youtube demo link submission
+[link](https://youtu.be/f7aApmJc5KI?si=z_6KWwVlGS8iLKE6)
+
 # Inbox Concierge - Email Classification App
 
 Smart email classification powered by AI. Authenticates with your Google account, fetches your last 200 email threads, and classifies them into customizable buckets using Gemini.
